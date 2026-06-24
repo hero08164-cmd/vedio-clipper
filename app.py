@@ -1,19 +1,3 @@
-"""
-Video Clipper — Flask Backend
-==============================
-Website ke saath chalane ke liye full REST API
-
-INSTALL:
-    pip install flask flask-cors yt-dlp ffmpeg-python
-
-RUN:
-    python app.py
-    → http://localhost:5000
-
-DEPLOY (free):
-    Railway.app ya Render.com pe push karo
-"""
-
 import os
 import re
 import json
@@ -21,25 +5,29 @@ import uuid
 import subprocess
 import threading
 from pathlib import Path
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False)
 
-# ── Folders ──
+# CORS — sab origins allow karo (file://, netlify, localhost sab)
+CORS(app, origins="*", allow_headers=["Content-Type"], methods=["GET","POST","OPTIONS"])
+
+# Har response mein manually bhi CORS header add karo (double safety)
+@app.after_request
+def add_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
 DOWNLOAD_DIR = Path("downloads")
 CLIPS_DIR    = Path("clips")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 CLIPS_DIR.mkdir(exist_ok=True)
 
-# ── Job status track karo (in-memory; production mein Redis use karo) ──
 jobs: dict = {}
 
-
-# ─────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────
 def to_seconds(t: str) -> float:
     t = t.strip()
     if ":" in t:
@@ -50,34 +38,37 @@ def to_seconds(t: str) -> float:
             return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
     return float(t)
 
-
 def safe_name(s: str) -> str:
     return re.sub(r'[^\w\-]', '_', s)[:40]
-
 
 def update_job(job_id, **kwargs):
     jobs[job_id].update(kwargs)
 
 
-# ─────────────────────────────────────────
-# ROUTE 1: Video info fetch
-# POST /api/info   body: { "url": "..." }
-# ─────────────────────────────────────────
-@app.route("/api/info", methods=["POST"])
+# ── OPTIONS preflight — sab routes ke liye ──
+@app.route("/api/<path:path>", methods=["OPTIONS"])
+def options_handler(path):
+    return make_response("", 200)
+
+
+# ── Route 1: Video info ──
+@app.route("/api/info", methods=["POST", "OPTIONS"])
 def video_info():
+    if request.method == "OPTIONS":
+        return make_response("", 200)
     data = request.json or {}
     url  = data.get("url", "").strip()
     if not url:
         return jsonify({"error": "URL nahi mili"}), 400
-
     try:
         result = subprocess.run(
-            ["yt-dlp", "--dump-json", "--no-playlist", url],
-            capture_output=True, text=True, timeout=30
+            ["yt-dlp", "--dump-json", "--no-playlist",
+             "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+             url],
+            capture_output=True, text=True, timeout=40
         )
         if result.returncode != 0:
-            return jsonify({"error": result.stderr[:300]}), 400
-
+            return jsonify({"error": result.stderr[:400]}), 400
         info = json.loads(result.stdout)
         return jsonify({
             "title":     info.get("title"),
@@ -92,22 +83,15 @@ def video_info():
         return jsonify({"error": str(e)}), 500
 
 
-# ─────────────────────────────────────────
-# ROUTE 2: Clip job start karo (async)
-# POST /api/clip
-# body: {
-#   "url": "...",
-#   "clips": [{"start":"0:12","end":"0:42","label":"moment1"}],
-#   "format": "reels"
-# }
-# ─────────────────────────────────────────
-@app.route("/api/clip", methods=["POST"])
+# ── Route 2: Clip job start ──
+@app.route("/api/clip", methods=["POST", "OPTIONS"])
 def start_clip_job():
-    data   = request.json or {}
-    url    = data.get("url", "").strip()
-    clips  = data.get("clips", [])
-    fmt    = data.get("format", "reels")
-
+    if request.method == "OPTIONS":
+        return make_response("", 200)
+    data  = request.json or {}
+    url   = data.get("url", "").strip()
+    clips = data.get("clips", [])
+    fmt   = data.get("format", "reels")
     if not url:
         return jsonify({"error": "URL chahiye"}), 400
     if not clips:
@@ -115,84 +99,59 @@ def start_clip_job():
 
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {
-        "status":   "queued",
-        "progress": 0,
-        "message":  "Shuru ho raha hai...",
-        "files":    [],
-        "error":    None,
+        "status": "queued", "progress": 0,
+        "message": "Shuru ho raha hai...", "files": [], "error": None,
     }
-
-    # Background thread mein chalao
-    t = threading.Thread(
-        target=_run_clip_job,
-        args=(job_id, url, clips, fmt),
-        daemon=True
-    )
-    t.start()
-
+    threading.Thread(target=_run_clip_job, args=(job_id, url, clips, fmt), daemon=True).start()
     return jsonify({"job_id": job_id})
 
 
 def _run_clip_job(job_id, url, clips, fmt):
     try:
-        update_job(job_id, status="downloading", progress=5,
-                   message="Video download ho rahi hai...")
-
-        # ── Download full video ──
+        update_job(job_id, status="downloading", progress=5, message="Video download ho rahi hai...")
         video_path = DOWNLOAD_DIR / f"{job_id}.mp4"
+
         result = subprocess.run([
             "yt-dlp",
             "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "--merge-output-format", "mp4",
             "-o", str(video_path),
             "--no-playlist",
-            "--sleep-interval", "3",
-            "--max-sleep-interval", "6",
+            "--sleep-interval", "2",
+            "--max-sleep-interval", "5",
             "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "--add-header", "Accept-Language:en-US,en;q=0.9",
-            "--extractor-retries", "3",
-            "--js-interpreter", "nodejs",
+            "--extractor-retries", "5",
             url
         ], capture_output=True, text=True)
 
         if result.returncode != 0:
-            update_job(job_id, status="error", error=result.stderr[:300])
+            update_job(job_id, status="error", error=result.stderr[:400])
             return
 
         update_job(job_id, progress=40, message="Video ready, clips kaat raha hoon...")
 
-        # Format filters
         vf_map = {
             "reels":     "crop=ih*9/16:ih,scale=1080:1920",
             "square":    "crop=min(iw\\,ih):min(iw\\,ih),scale=1080:1080",
             "landscape": "scale=1280:720",
         }
         vf = vf_map.get(fmt, "scale=1280:720")
-
         out_files = []
-        total = len(clips)
 
         for i, clip in enumerate(clips):
             start_sec = to_seconds(clip.get("start", "0"))
-            end_sec   = to_seconds(clip.get("end",   "30"))
+            end_sec   = to_seconds(clip.get("end", "30"))
             duration  = end_sec - start_sec
             label     = safe_name(clip.get("label", f"clip_{i+1}"))
             out_path  = CLIPS_DIR / f"{job_id}_{label}.mp4"
 
             subprocess.run([
-                "ffmpeg",
-                "-ss",  str(start_sec),
-                "-i",   str(video_path),
-                "-t",   str(duration),
-                "-vf",  vf,
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "23",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-movflags", "+faststart",
-                "-y",
-                str(out_path)
+                "ffmpeg", "-ss", str(start_sec), "-i", str(video_path),
+                "-t", str(duration), "-vf", vf,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+                "-y", str(out_path)
             ], check=True, capture_output=True)
 
             out_files.append({
@@ -202,12 +161,9 @@ def _run_clip_job(job_id, url, clips, fmt):
                 "start":    clip.get("start"),
                 "end":      clip.get("end"),
             })
+            prog = 40 + int(((i + 1) / len(clips)) * 55)
+            update_job(job_id, progress=prog, message=f"Clip {i+1}/{len(clips)} ready...")
 
-            prog = 40 + int(((i + 1) / total) * 55)
-            update_job(job_id, progress=prog,
-                       message=f"Clip {i+1}/{total} ready...")
-
-        # ── Cleanup full video ──
         try:
             video_path.unlink()
         except Exception:
@@ -220,10 +176,7 @@ def _run_clip_job(job_id, url, clips, fmt):
         update_job(job_id, status="error", error=str(e))
 
 
-# ─────────────────────────────────────────
-# ROUTE 3: Job status check karo
-# GET /api/status/<job_id>
-# ─────────────────────────────────────────
+# ── Route 3: Status ──
 @app.route("/api/status/<job_id>", methods=["GET"])
 def job_status(job_id):
     job = jobs.get(job_id)
@@ -232,10 +185,7 @@ def job_status(job_id):
     return jsonify(job)
 
 
-# ─────────────────────────────────────────
-# ROUTE 4: Clip download karo
-# GET /api/download/<file_id>
-# ─────────────────────────────────────────
+# ── Route 4: Download ──
 @app.route("/api/download/<file_id>", methods=["GET"])
 def download_clip(file_id):
     safe_id = re.sub(r'[^\w\-]', '', file_id)
@@ -243,19 +193,16 @@ def download_clip(file_id):
     if not path.exists():
         return jsonify({"error": "File nahi mili"}), 404
     return send_file(str(path), as_attachment=True,
-                     download_name=f"{safe_id}.mp4",
-                     mimetype="video/mp4")
+                     download_name=f"{safe_id}.mp4", mimetype="video/mp4")
 
 
-# ─────────────────────────────────────────
-# ROUTE 5: Health check
-# GET /api/health
-# ─────────────────────────────────────────
+# ── Route 5: Health ──
 @app.route("/api/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "active_jobs": len(jobs)})
 
 
 if __name__ == "__main__":
-    print("🚀 Video Clipper Backend chal raha hai → http://localhost:5000")
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Server chal raha hai → http://0.0.0.0:{port}")
+    app.run(debug=False, host="0.0.0.0", port=port)
