@@ -2,5 +2,5 @@ services:
   - type: web
     name: video-clipper-api
     env: python
-    buildCommand: apt-get install -y ffmpeg && pip install -r requirements.txt
+    buildCommand: apt-get install -y ffmpeg nodejs && pip install -r requirements.txt
     startCommand: python app.py
