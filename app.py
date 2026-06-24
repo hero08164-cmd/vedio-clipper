@@ -25,7 +25,7 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)   # Frontend se requests allow karo
+CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False)
 
 # ── Folders ──
 DOWNLOAD_DIR = Path("downloads")
@@ -146,6 +146,12 @@ def _run_clip_job(job_id, url, clips, fmt):
             "--merge-output-format", "mp4",
             "-o", str(video_path),
             "--no-playlist",
+            "--sleep-interval", "3",
+            "--max-sleep-interval", "6",
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "--add-header", "Accept-Language:en-US,en;q=0.9",
+            "--extractor-retries", "3",
+            "--js-interpreter", "nodejs",
             url
         ], capture_output=True, text=True)
 
