@@ -8,6 +8,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+# Pehle pip + setuptools upgrade karo (pkg_resources fix)
+RUN pip install --upgrade pip setuptools wheel
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
