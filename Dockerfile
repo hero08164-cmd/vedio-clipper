@@ -8,19 +8,22 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# STEP 1: pip + setuptools pehle upgrade karo (pkg_resources fix)
-RUN pip install --upgrade pip setuptools wheel
+# pip upgrade
+RUN pip install --upgrade pip
 
-# STEP 2: openai-whisper alag install karo (legacy setup.py fix)
-RUN pip install --no-cache-dir openai-whisper==20231117
+# setuptools PEHLE - isolated environment me bhi available rahe
+RUN pip install "setuptools>=68" wheel
 
-# STEP 3: Baaki dependencies
+# Whisper latest GitHub se (modern pyproject.toml hai, setup.py nahi)
+RUN pip install --no-cache-dir "openai-whisper @ git+https://github.com/openai/whisper.git"
+
+# Baaki dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Whisper base model pre-download (cold start fast hoga)
+# Model pre-download
 RUN python -c "import whisper; whisper.load_model('base')"
 
 EXPOSE 8000
