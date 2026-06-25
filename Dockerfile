@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# FFmpeg install karo (Whisper ko audio process ke liye chahiye)
+# System dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
@@ -8,15 +8,19 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Pehle pip + setuptools upgrade karo (pkg_resources fix)
+# STEP 1: pip + setuptools pehle upgrade karo (pkg_resources fix)
 RUN pip install --upgrade pip setuptools wheel
 
+# STEP 2: openai-whisper alag install karo (legacy setup.py fix)
+RUN pip install --no-cache-dir openai-whisper==20231117
+
+# STEP 3: Baaki dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Whisper model pehle se download kar lo (cold start fast hoga)
+# Whisper base model pre-download (cold start fast hoga)
 RUN python -c "import whisper; whisper.load_model('base')"
 
 EXPOSE 8000
