@@ -1,6 +1,10 @@
 services:
   - type: web
-    name: video-clipper-api
-    env: python
-    buildCommand: apt-get install -y ffmpeg nodejs && pip install -r requirements.txt
-    startCommand: python app.py
+    name: whisper-transcription-service
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
