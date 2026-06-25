@@ -14,15 +14,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Model load hoga ek baar startup pe
-print("⏳ Whisper model load ho raha hai...")
-model = whisper.load_model("base")  # tiny/base/small - Render free plan ke liye base best hai
-print("✅ Whisper model ready!")
+print("⏳ Whisper tiny model load ho raha hai...")
+model = whisper.load_model("tiny")  # tiny = ~150MB RAM only
+print("✅ Whisper ready!")
 
 
 @app.get("/")
 def root():
-    return {"status": "Whisper Service chal raha hai ✅", "model": "base"}
+    return {"status": "✅ Whisper Service chal raha hai", "model": "tiny"}
 
 
 @app.get("/health")
@@ -32,36 +31,28 @@ def health():
 
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):
-    """
-    Audio/Video file bhejo → Transcript + Timestamps wapas milenge
-    """
-    allowed_types = ["audio/mpeg", "audio/wav", "audio/mp4", "video/mp4", 
-                     "audio/x-wav", "audio/webm", "video/webm", "audio/ogg"]
-    
-    # File save karo temp folder me
     suffix = os.path.splitext(file.filename)[-1] or ".mp4"
-    
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         content = await file.read()
-        
-        # 100MB limit
+
         if len(content) > 100 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="File bahut badi hai! Max 100MB.")
-        
+
         tmp.write(content)
         tmp_path = tmp.name
 
     try:
         print(f"🎙️ Transcribing: {file.filename}")
-        
+
         result = model.transcribe(
             tmp_path,
             verbose=False,
-            word_timestamps=True,   # Word level timestamps
-            language=None,           # Auto detect (Hindi/English dono)
+            word_timestamps=True,
+            language=None,
+            fp16=False,  # CPU pe fp16 nahi chalta
         )
 
-        # Segments format karo
         segments = []
         for seg in result["segments"]:
             segments.append({
@@ -79,10 +70,9 @@ async def transcribe(file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
-    
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
     finally:
-        # Temp file delete karo
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
